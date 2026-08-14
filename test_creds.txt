@@ -1,0 +1,4 @@
+# Credentials file: one email:password per line
+# Lines starting with # are ignored
+test1@example.com:wrongpass1
+test2@example.com:wrongpass2

