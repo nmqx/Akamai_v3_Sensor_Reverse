@@ -1,0 +1,70 @@
+__pycache__/
+*.pyc
+.env
+node_modules/
+package-lock.json
+
+# Live/cached sensor scripts
+sensor_script_live.js
+sensor_script_fresh.js
+sensor_script.js
+
+# Captured/session data
+captured_sensors.json
+*.network-request
+*.json
+!package.json
+!.env.example
+
+# Temp files
+*.output
+
+# Backup files
+*_backup.*
+*_working.*
+
+# Test/debug/analysis files
+test_*.py
+test_*.js
+trace_*.js
+trace_*.txt
+compare_*.js
+analyze_*.py
+decode_*.py
+deobf_*.py
+explore_*.py
+extract_*.py
+fetch_*.py
+capture_*.py
+check_*.js
+
+# One-off experiments and old solvers
+chrome_solver.py
+pure_solver*.py
+solver_v*.py
+solver_hybrid.py
+solver_api_fast.py
+
+# HTML captures and screenshots
+*.html
+*.png
+
+# Old scripts & analysis
+akcpt_script.js
+challenge_*.js
+fresh_*.js
+run_*.js
+relay_*.js
+relay_*.py
+sensor_gen*.js
+pixel_*.js
+mm_post_*.txt
+pm_post_*.txt
+order_post_*.txt
+sensor_post_*.txt
+
+# Old solver directory
+basicfit_solver*/
+
+# REVERSING.md merged into README.md
+REVERSING.md
