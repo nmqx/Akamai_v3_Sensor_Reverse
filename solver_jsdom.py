@@ -190,10 +190,10 @@ def _generate_sensors(cookies_dict, script_path, fp_path):
         return []
 
 
-def solve(email: str, password: str) -> dict:
+def solve(email: str, password: str, asn=None) -> dict:
     result = {"success": False, "error": "no attempts"}
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        proxy_url, proxy_sid = _make_proxy()
+        proxy_url, proxy_sid = _make_proxy(asn=asn)
         _log(f"Attempt {attempt}/{MAX_ATTEMPTS} (proxy {proxy_sid})")
         try:
             result = _attempt(email, password, proxy_url)
@@ -267,11 +267,23 @@ def _run_attempt(email, password, proxy_url, ua, sec_ch_ua, fp_path, chrome_majo
     if r_js.status_code != 200:
         return {"success": False, "error": f"sensor script {r_js.status_code}"}
 
-    script_path = os.path.join(SCRIPT_DIR, "sensor_script_live.js")
-    with open(script_path, "w", encoding="utf-8") as f:
-        f.write(r_js.text)
+    script_file = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".js", delete=False, dir=SCRIPT_DIR, encoding="utf-8"
+    )
+    script_file.write(r_js.text)
+    script_file.close()
+    script_path = script_file.name
     _log(f"  Script: {len(r_js.text)} bytes")
 
+    try:
+        return _run_sensor_flow(
+            sess, email, password, ua, sec_ch_ua, fp_path, base_headers, script_path,
+        )
+    finally:
+        _cleanup_temp(script_path)
+
+
+def _run_sensor_flow(sess, email, password, ua, sec_ch_ua, fp_path, base_headers, script_path):
     sensor_headers = {
         "Accept": "*/*",
         "Content-Type": "text/plain;charset=UTF-8",
@@ -293,6 +305,8 @@ def _run_attempt(email, password, proxy_url, ua, sec_ch_ua, fp_path, chrome_majo
         return {"success": False, "error": "sensor generation failed"}
     _log(f"  Generated {len(sensor_bodies)} sensors ({dt:.1f}s)")
 
+    time.sleep(random.uniform(0.5, 3.0))
+
     for i, body in enumerate(sensor_bodies):
         r_s = sess.post(SENSOR_URL, data=body.encode("utf-8"), headers=sensor_headers)
         trust = _get_trust(sess)
@@ -300,10 +314,12 @@ def _run_attempt(email, password, proxy_url, ua, sec_ch_ua, fp_path, chrome_majo
         if trust == "0":
             _log("  Trust achieved!")
             break
-        time.sleep(random.uniform(0.1, 0.3))
+        time.sleep(random.uniform(0.3, 1.0))
 
     trust = _get_trust(sess)
     _log(f"  Final trust={trust}")
+
+    time.sleep(random.uniform(0.5, 2.0))
 
     csrf = sess.get_cookie("_csrf")
     login_headers = _login_headers(ua, csrf, sec_ch_ua)
@@ -336,6 +352,8 @@ def _run_attempt(email, password, proxy_url, ua, sec_ch_ua, fp_path, chrome_majo
         headers={**base_headers, "Referer": LOGIN_URL},
     )
 
+    time.sleep(random.uniform(0.5, 2.0))
+
     for i in range(3):
         cookies_dict = sess.cookies_dict()
         chlge_bodies = _generate_sensors(cookies_dict, script_path, fp_path)
@@ -346,7 +364,7 @@ def _run_attempt(email, password, proxy_url, ua, sec_ch_ua, fp_path, chrome_majo
                 _log(f"  Challenge batch #{i+1} post #{j+1}: {r_c.status_code}, sec_cpt={sec}")
                 if sec == "2":
                     break
-                time.sleep(0.1)
+                time.sleep(random.uniform(0.3, 1.0))
             if _get_sec_cpt(sess) == "2":
                 break
         time.sleep(1)
@@ -371,7 +389,7 @@ def _run_attempt(email, password, proxy_url, ua, sec_ch_ua, fp_path, chrome_majo
         )
         _log(f"  Verify: {r_v.status_code}, sec_cpt={_get_sec_cpt(sess)}")
 
-    time.sleep(2)
+    time.sleep(random.uniform(1.5, 4.0))
 
     csrf = sess.get_cookie("_csrf") or csrf
     login_headers = _login_headers(ua, csrf, sec_ch_ua)
@@ -391,6 +409,13 @@ def _run_attempt(email, password, proxy_url, ua, sec_ch_ua, fp_path, chrome_majo
 
     return {"success": False, "status": r2.status_code, "body": r2.text[:500],
             "error": "challenge solve failed"}
+
+
+def _cleanup_temp(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def _login_headers(ua, csrf, sec_ch_ua):

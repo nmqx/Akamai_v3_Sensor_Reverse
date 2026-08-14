@@ -5,23 +5,27 @@ Usage:
 
   workers: number of concurrent workers (default: 1)
   rounds:  total solves to run (default: workers)
+
+Env vars:
+  STAGGER=<seconds>   delay between launching workers (default: 0)
+  USE_RESI=1          use residential proxy with per-worker ASN isolation
 """
 import os
+import random
 import sys
 import time
-import threading
 import statistics
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 os.environ.setdefault("SOLVER", "jsdom")
 
-from solver_jsdom import solve, _log
+from solver_jsdom import solve, _log, FR_ASNS
 
 
-def timed_solve(email, password, worker_id):
+def timed_solve(email, password, worker_id, asn=None):
     t0 = time.time()
-    _log(f"[W{worker_id}] Starting solve")
-    result = solve(email, password)
+    _log(f"[W{worker_id}] Starting solve" + (f" (ASN {asn})" if asn else ""))
+    result = solve(email, password, asn=asn)
     dt = time.time() - t0
     result["elapsed"] = round(dt, 1)
     result["worker"] = worker_id
@@ -33,8 +37,18 @@ def run_benchmark(email, password, workers=1, rounds=None):
     if rounds is None:
         rounds = workers
 
+    use_resi = bool(os.environ.get("USE_RESI"))
+    worker_asns = []
+    if use_resi:
+        pool_asns = FR_ASNS[:]
+        random.shuffle(pool_asns)
+        for i in range(rounds):
+            worker_asns.append(pool_asns[i % len(pool_asns)])
+
     print(f"\n{'='*60}")
     print(f"Benchmark: {rounds} solve(s), {workers} concurrent worker(s)")
+    if use_resi:
+        print(f"Residential proxy: each worker gets a unique ASN")
     print(f"{'='*60}\n")
 
     results = []
@@ -45,7 +59,8 @@ def run_benchmark(email, password, workers=1, rounds=None):
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {}
         for i in range(rounds):
-            f = pool.submit(timed_solve, email, password, i + 1)
+            asn = worker_asns[i] if worker_asns else None
+            f = pool.submit(timed_solve, email, password, i + 1, asn)
             futures[f] = i + 1
             if stagger > 0 and i < rounds - 1:
                 time.sleep(stagger)
