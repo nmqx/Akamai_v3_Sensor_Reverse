@@ -473,27 +473,30 @@ def _success_result(r, sess):
     return result
 
 
-def pre_check_email(email, proxy_url=None):
+def pre_check_email(email, proxy_url=None, retries=2):
     from curl_cffi import requests as cffi_requests
     proxies = {"https": proxy_url, "http": proxy_url} if proxy_url else None
-    try:
-        r = cffi_requests.post(
-            PRE_CHECK_URL,
-            data={"loginEmail": email},
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                              "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-                "Accept": "*/*",
-            },
-            proxies=proxies,
-            impersonate="chrome131",
-            timeout=10,
-        )
-        data = r.json()
-        return data.get("isGymMember", False)
-    except Exception:
-        return None
+    for attempt in range(retries + 1):
+        try:
+            r = cffi_requests.post(
+                PRE_CHECK_URL,
+                data={"loginEmail": email},
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                                  "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+                    "Accept": "*/*",
+                },
+                proxies=proxies,
+                impersonate="chrome131",
+                timeout=15,
+            )
+            data = r.json()
+            return data.get("isGymMember", False)
+        except Exception:
+            if attempt < retries:
+                time.sleep(random.uniform(1, 3))
+    return None
 
 
 def capture_member(ctx, auth_code):

