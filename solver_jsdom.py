@@ -748,7 +748,7 @@ def check_credential(ctx, email, password, capture=False):
     ctx["uses_left"] -= 1
 
     if status == 200:
-        result = {"email": email, "valid": True, "status": 200}
+        result = {"email": email, "password": password, "valid": True, "status": 200}
         if capture:
             try:
                 auth_code = r.json().get("code")
@@ -759,11 +759,11 @@ def check_credential(ctx, email, password, capture=False):
         ctx["uses_left"] = 0
         return result
     if status == 401:
-        return {"email": email, "valid": False, "status": 401}
+        return {"email": email, "password": password, "valid": False, "status": 401}
     if status == 428:
         ctx["uses_left"] = 0
-        return {"email": email, "valid": None, "status": 428, "error": "cookie expired"}
-    return {"email": email, "valid": None, "status": status, "error": f"unexpected {status}"}
+        return {"email": email, "password": password, "valid": None, "status": 428, "error": "cookie expired"}
+    return {"email": email, "password": password, "valid": None, "status": status, "error": f"unexpected {status}"}
 
 
 def cleanup_session(ctx):

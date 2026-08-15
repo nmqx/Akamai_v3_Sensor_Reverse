@@ -59,6 +59,7 @@ def _print_member(m):
 def _write_member_record(f, r):
     f.write(f"{'='*60}\n")
     f.write(f"Email:    {r['email']}\n")
+    f.write(f"Pass:     {r.get('password', '?')}\n")
     m = r.get("member", {})
     if not m:
         f.write("  (no member data captured)\n\n")
@@ -244,6 +245,7 @@ def batch_check(creds, workers=10, do_precheck=True, do_capture=True, precheck_t
             if idx > 0:
                 print(f"  {'-'*54}")
             print(f"  Email:    {r['email']}")
+            print(f"  Pass:     {r.get('password', '?')}")
             if r.get("member"):
                 _print_member(r["member"])
 
