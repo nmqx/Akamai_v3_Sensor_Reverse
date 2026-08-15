@@ -473,9 +473,14 @@ def _success_result(r, sess):
     return result
 
 
+_precheck_errors = {"last": "", "count": 0}
+_precheck_errors_lock = threading.Lock()
+
+
 def pre_check_email(email, proxy_url=None, retries=2):
     from curl_cffi import requests as cffi_requests
     proxies = {"https": proxy_url, "http": proxy_url} if proxy_url else None
+    last_err = None
     for attempt in range(retries + 1):
         try:
             r = cffi_requests.post(
@@ -493,9 +498,19 @@ def pre_check_email(email, proxy_url=None, retries=2):
             )
             data = r.json()
             return data.get("isGymMember", False)
-        except Exception:
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
             if attempt < retries:
-                time.sleep(random.uniform(1, 3))
+                proxy_url, _ = _make_proxy()
+                proxies = {"https": proxy_url, "http": proxy_url} if proxy_url else None
+                time.sleep(random.uniform(0.5, 2))
+    with _precheck_errors_lock:
+        if last_err != _precheck_errors["last"]:
+            _precheck_errors["last"] = last_err
+            _precheck_errors["count"] = 1
+            _log(f"  Pre-check error: {last_err[:120]}")
+        else:
+            _precheck_errors["count"] += 1
     return None
 
 
