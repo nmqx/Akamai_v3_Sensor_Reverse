@@ -255,11 +255,19 @@ def batch_check(creds, workers=10, do_precheck=True, do_capture=True, precheck_t
             print(f"  {r['email']}: {r.get('error', 'unknown')}")
 
     if valid and do_capture:
-        out_path = "results.txt"
-        with open(out_path, "w", encoding="utf-8") as f:
-            for r in valid:
+        active = [r for r in valid if r.get("member", {}).get("membership_status_g") == "Active"]
+        other = [r for r in valid if r.get("member", {}).get("membership_status_g") != "Active"]
+
+        with open("results.txt", "w", encoding="utf-8") as f:
+            for r in active:
                 _write_member_record(f, r)
-        _log(f"Results saved to {out_path}")
+        _log(f"Active accounts saved to results.txt ({len(active)})")
+
+        if other:
+            with open("custom.txt", "w", encoding="utf-8") as f:
+                for r in other:
+                    _write_member_record(f, r)
+            _log(f"Non-active accounts saved to custom.txt ({len(other)})")
 
     return results
 
