@@ -24,7 +24,7 @@ os.environ.setdefault("SOLVER", "jsdom")
 
 from solver_jsdom import (
     solve_session, check_credential, cleanup_session,
-    pre_check_email, _log, _make_proxy, REUSE_LIMIT,
+    pre_check_email, _log, _make_proxy, REUSE_LIMIT, PROXY_USER,
 )
 
 
@@ -122,9 +122,11 @@ def pre_check_batch(creds, workers=50):
     lock = threading.Lock()
     counters = {"done": 0, "members": 0, "errors": 0}
 
+    use_proxy = bool(PROXY_USER)
+
     def check_one(item):
         email, _ = item
-        proxy_url, _ = _make_proxy()
+        proxy_url = _make_proxy()[0] if use_proxy else None
         is_member = pre_check_email(email, proxy_url)
         with lock:
             results[email] = is_member

@@ -501,8 +501,9 @@ def pre_check_email(email, proxy_url=None, retries=2):
         except Exception as e:
             last_err = f"{type(e).__name__}: {e}"
             if attempt < retries:
-                proxy_url, _ = _make_proxy()
-                proxies = {"https": proxy_url, "http": proxy_url} if proxy_url else None
+                if proxy_url:
+                    proxy_url, _ = _make_proxy()
+                    proxies = {"https": proxy_url, "http": proxy_url}
                 time.sleep(random.uniform(0.5, 2))
     with _precheck_errors_lock:
         if last_err != _precheck_errors["last"]:
